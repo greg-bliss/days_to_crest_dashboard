@@ -38,7 +38,7 @@ jobs:
         fi
 
     - name: Run Flood Dashboard Script
-      run: python your_script.py # Make sure this matches your exact Python file name
+      run: python days_to_crest.py # Make sure this matches your exact Python file name
 
     - name: Commit and Push Updated Dashboard
       run: |
