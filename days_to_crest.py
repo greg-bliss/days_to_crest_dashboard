@@ -9,7 +9,7 @@ from datetime import datetime, timezone, timedelta
 # --- Configuration ---
 BASE_API_URL = "https://api.water.noaa.gov/nwps/v1/gauges"
 CACHE_FILE = "gauge_metadata_cache_all.json"
-DASHBOARD_FILE = "flood_dashboard.html"
+DASHBOARD_FILE = "days_to_crest.html"
 
 MAX_CONCURRENT_REQUESTS = 100 
 semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
