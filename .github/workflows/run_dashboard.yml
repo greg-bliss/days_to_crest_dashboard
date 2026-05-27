@@ -2,12 +2,15 @@ name: Update Flood Dashboard
 
 on:
   schedule:
-    # Runs every 30 minutes
     - cron: '*/30 * * * *'
-  workflow_dispatch: # Allows you to manually trigger the script via the GitHub UI
+  workflow_dispatch:
 
 permissions:
-  contents: write # Needed to update the cache and commit the HTML file
+  contents: write
+
+env:
+  # This clears out the Node.js deprecation warning by forcing Node 24
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true 
 
 jobs:
   build-and-run:
@@ -21,22 +24,27 @@ jobs:
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
-        cache: 'pip' # This will now work perfectly because requirements.txt exists
+        # REMOVED the cache: 'pip' line to stop the runner from crashing
 
     - name: Install Dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
+        # Fallback logic: Try installing from requirements.txt, 
+        # but install manually if the file is misplaced.
+        if [ -f requirements.txt ]; then
+          pip install -r requirements.txt
+        else
+          pip install aiohttp folium nest_asyncio
+        fi
 
     - name: Run Flood Dashboard Script
-      run: python your_script.py # Make sure this matches the exact name of your Python file
+      run: python your_script.py # Make sure this matches your exact Python file name
 
     - name: Commit and Push Updated Dashboard
       run: |
         git config --global user.name "github-actions[bot]"
         git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
         
-        # Changed to add index.html instead of flood_dashboard.html
         git add index.html gauge_metadata_cache_all.json
         
         if git diff-index --quiet HEAD; then
