@@ -11,7 +11,7 @@ BASE_API_URL = "https://api.water.noaa.gov/nwps/v1/gauges"
 CACHE_FILE = "gauge_metadata_cache_all.json"
 DASHBOARD_FILE = "index.html" 
 
-MAX_CONCURRENT_REQUESTS = 100 
+MAX_CONCURRENT_REQUESTS = 25
 semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
 
 # --- Helper Functions ---
@@ -175,7 +175,7 @@ async def build_metadata_cache(session):
 
 async def generate_dashboard():
     connector = aiohttp.TCPConnector(limit=MAX_CONCURRENT_REQUESTS)
-    timeout = aiohttp.ClientTimeout(total=600) 
+    timeout = aiohttp.ClientTimeout(total=0, sock_connect=30, sock_read=30)
     
     async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
         metadata = await build_metadata_cache(session)
