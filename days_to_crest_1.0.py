@@ -118,14 +118,24 @@ def get_stage_at_time(timeseries_data, target_dt):
     return None
 
 # --- Core Asynchronous Logic ---
-async def fetch_all_gauge_lids(session):
+async def fetch_all_gauge_lids(session, retries=5):
     print("Discovering all NWPS gauges...")
-    async with session.get(BASE_API_URL) as response:
-        if response.status == 200:
-            data = await response.json()
-            if "gauges" in data:
-                return [g.get("lid") for g in data["gauges"] if "lid" in g]
-        return []
+    for attempt in range(retries):
+        try:
+            async with session.get(BASE_API_URL) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if "gauges" in data:
+                        return [g.get("lid") for g in data["gauges"] if "lid" in g]
+                else:
+                    print(f"NOAA API returned status {response.status}. Retrying...")
+        except (aiohttp.ClientPayloadError, aiohttp.ServerDisconnectedError, asyncio.TimeoutError, Exception) as e:
+            print(f"Discovery attempt {attempt + 1} failed: {e}")
+            if attempt == retries - 1:
+                print("Max retries reached. NOAA API is unresponsive.")
+                return []
+            await asyncio.sleep(5) # Wait 5 seconds and try asking NOAA again
+    return []
 
 async def fetch_with_retries(session, url, lid, retries=3):
     async with semaphore:
@@ -175,7 +185,8 @@ async def build_metadata_cache(session):
 
 async def generate_dashboard():
     connector = aiohttp.TCPConnector(limit=MAX_CONCURRENT_REQUESTS)
-    timeout = aiohttp.ClientTimeout(total=0, sock_connect=30, sock_read=30)
+    # Give the connection 60 seconds of grace period, and 1 hour total for the whole script
+    timeout = aiohttp.ClientTimeout(total=3600, connect=60, sock_read=60) 
     
     async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
         metadata = await build_metadata_cache(session)
