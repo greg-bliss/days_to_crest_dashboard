@@ -17,7 +17,7 @@
             <meta name="viewport" content="width=device-width,
                 initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
             <style>
-                #map_2636c719b759ab2b1b30c4dda83cde9e {
+                #map_23e20e06aa0aa220647d8d4e545133e5 {
                     position: relative;
                     width: 100.0%;
                     height: 100.0%;
@@ -169,7 +169,7 @@
     </div>
 
     <div style="position: fixed; bottom: 25px; left: 25px; z-index: 9999; background: rgba(30, 30, 30, 0.9); color: #aaa; padding: 8px 12px; border-radius: 4px; border: 1px solid #444; font-family: 'Segoe UI', Arial, sans-serif; font-size: 12px; box-shadow: 2px 2px 5px rgba(0,0,0,0.4); pointer-events: none;">
-        Dashboard Updated: <span style="color: #00ffcc; font-weight: bold;">2026-06-15 16:23:01 UTC</span>
+        Dashboard Updated: <span style="color: #00ffcc; font-weight: bold;">2026-06-17 13:07:14 UTC</span>
     </div>
     
     <div id="lookbackSliderUI" style="position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%); z-index: 9999; background: rgba(30, 30, 30, 0.95); padding: 15px 25px; border-radius: 8px; display: none; color: white; font-family: 'Segoe UI', Arial, sans-serif; text-align: center; border: 1px solid #555; box-shadow: 2px 2px 10px rgba(0,0,0,0.5); width: 400px;">
@@ -201,12 +201,12 @@
     
     <script>
     window.addEventListener("load", function() {
-        var map = map_2636c719b759ab2b1b30c4dda83cde9e; 
+        var map = map_23e20e06aa0aa220647d8d4e545133e5; 
         var baseData = [];
         var forecastData = [];
-        var dayBounds = {"1": "Jun 15 12:00 UTC - Jun 16 12:00 UTC", "2": "Jun 16 12:00 UTC - Jun 17 12:00 UTC", "3": "Jun 17 12:00 UTC - Jun 18 12:00 UTC", "4": "Jun 18 12:00 UTC - Jun 19 12:00 UTC", "5": "Jun 19 12:00 UTC - Jun 20 12:00 UTC", "6": "Jun 20 12:00 UTC - Jun 21 12:00 UTC", "7": "Jun 21 12:00 UTC - Jun 22 12:00 UTC"};
-        var fxLabels = {"-28": "Jun 08 12:00 UTC", "-27": "Jun 08 18:00 UTC", "-26": "Jun 09 00:00 UTC", "-25": "Jun 09 06:00 UTC", "-24": "Jun 09 12:00 UTC", "-23": "Jun 09 18:00 UTC", "-22": "Jun 10 00:00 UTC", "-21": "Jun 10 06:00 UTC", "-20": "Jun 10 12:00 UTC", "-19": "Jun 10 18:00 UTC", "-18": "Jun 11 00:00 UTC", "-17": "Jun 11 06:00 UTC", "-16": "Jun 11 12:00 UTC", "-15": "Jun 11 18:00 UTC", "-14": "Jun 12 00:00 UTC", "-13": "Jun 12 06:00 UTC", "-12": "Jun 12 12:00 UTC", "-11": "Jun 12 18:00 UTC", "-10": "Jun 13 00:00 UTC", "-9": "Jun 13 06:00 UTC", "-8": "Jun 13 12:00 UTC", "-7": "Jun 13 18:00 UTC", "-6": "Jun 14 00:00 UTC", "-5": "Jun 14 06:00 UTC", "-4": "Jun 14 12:00 UTC", "-3": "Jun 14 18:00 UTC", "-2": "Jun 15 00:00 UTC", "-1": "Jun 15 06:00 UTC", "0": "Jun 15 12:00 UTC", "1": "Jun 15 18:00 UTC", "2": "Jun 16 00:00 UTC", "3": "Jun 16 06:00 UTC", "4": "Jun 16 12:00 UTC", "5": "Jun 16 18:00 UTC", "6": "Jun 17 00:00 UTC", "7": "Jun 17 06:00 UTC", "8": "Jun 17 12:00 UTC", "9": "Jun 17 18:00 UTC", "10": "Jun 18 00:00 UTC", "11": "Jun 18 06:00 UTC", "12": "Jun 18 12:00 UTC", "13": "Jun 18 18:00 UTC", "14": "Jun 19 00:00 UTC", "15": "Jun 19 06:00 UTC", "16": "Jun 19 12:00 UTC", "17": "Jun 19 18:00 UTC", "18": "Jun 20 00:00 UTC", "19": "Jun 20 06:00 UTC", "20": "Jun 20 12:00 UTC", "21": "Jun 20 18:00 UTC", "22": "Jun 21 00:00 UTC", "23": "Jun 21 06:00 UTC", "24": "Jun 21 12:00 UTC", "25": "Jun 21 18:00 UTC", "26": "Jun 22 00:00 UTC", "27": "Jun 22 06:00 UTC", "28": "Jun 22 12:00 UTC"};
-        var lookbackDates = {"-30": "May 16", "-29": "May 17", "-28": "May 18", "-27": "May 19", "-26": "May 20", "-25": "May 21", "-24": "May 22", "-23": "May 23", "-22": "May 24", "-21": "May 25", "-20": "May 26", "-19": "May 27", "-18": "May 28", "-17": "May 29", "-16": "May 30", "-15": "May 31", "-14": "Jun 01", "-13": "Jun 02", "-12": "Jun 03", "-11": "Jun 04", "-10": "Jun 05", "-9": "Jun 06", "-8": "Jun 07", "-7": "Jun 08", "-6": "Jun 09", "-5": "Jun 10", "-4": "Jun 11", "-3": "Jun 12", "-2": "Jun 13", "-1": "Jun 14", "0": "Jun 15"};
+        var dayBounds = {"1": "Jun 17 12:00 UTC - Jun 18 12:00 UTC", "2": "Jun 18 12:00 UTC - Jun 19 12:00 UTC", "3": "Jun 19 12:00 UTC - Jun 20 12:00 UTC", "4": "Jun 20 12:00 UTC - Jun 21 12:00 UTC", "5": "Jun 21 12:00 UTC - Jun 22 12:00 UTC", "6": "Jun 22 12:00 UTC - Jun 23 12:00 UTC", "7": "Jun 23 12:00 UTC - Jun 24 12:00 UTC"};
+        var fxLabels = {"-28": "Jun 10 12:00 UTC", "-27": "Jun 10 18:00 UTC", "-26": "Jun 11 00:00 UTC", "-25": "Jun 11 06:00 UTC", "-24": "Jun 11 12:00 UTC", "-23": "Jun 11 18:00 UTC", "-22": "Jun 12 00:00 UTC", "-21": "Jun 12 06:00 UTC", "-20": "Jun 12 12:00 UTC", "-19": "Jun 12 18:00 UTC", "-18": "Jun 13 00:00 UTC", "-17": "Jun 13 06:00 UTC", "-16": "Jun 13 12:00 UTC", "-15": "Jun 13 18:00 UTC", "-14": "Jun 14 00:00 UTC", "-13": "Jun 14 06:00 UTC", "-12": "Jun 14 12:00 UTC", "-11": "Jun 14 18:00 UTC", "-10": "Jun 15 00:00 UTC", "-9": "Jun 15 06:00 UTC", "-8": "Jun 15 12:00 UTC", "-7": "Jun 15 18:00 UTC", "-6": "Jun 16 00:00 UTC", "-5": "Jun 16 06:00 UTC", "-4": "Jun 16 12:00 UTC", "-3": "Jun 16 18:00 UTC", "-2": "Jun 17 00:00 UTC", "-1": "Jun 17 06:00 UTC", "0": "Jun 17 12:00 UTC", "1": "Jun 17 18:00 UTC", "2": "Jun 18 00:00 UTC", "3": "Jun 18 06:00 UTC", "4": "Jun 18 12:00 UTC", "5": "Jun 18 18:00 UTC", "6": "Jun 19 00:00 UTC", "7": "Jun 19 06:00 UTC", "8": "Jun 19 12:00 UTC", "9": "Jun 19 18:00 UTC", "10": "Jun 20 00:00 UTC", "11": "Jun 20 06:00 UTC", "12": "Jun 20 12:00 UTC", "13": "Jun 20 18:00 UTC", "14": "Jun 21 00:00 UTC", "15": "Jun 21 06:00 UTC", "16": "Jun 21 12:00 UTC", "17": "Jun 21 18:00 UTC", "18": "Jun 22 00:00 UTC", "19": "Jun 22 06:00 UTC", "20": "Jun 22 12:00 UTC", "21": "Jun 22 18:00 UTC", "22": "Jun 23 00:00 UTC", "23": "Jun 23 06:00 UTC", "24": "Jun 23 12:00 UTC", "25": "Jun 23 18:00 UTC", "26": "Jun 24 00:00 UTC", "27": "Jun 24 06:00 UTC", "28": "Jun 24 12:00 UTC"};
+        var lookbackDates = {"-30": "May 18", "-29": "May 19", "-28": "May 20", "-27": "May 21", "-26": "May 22", "-25": "May 23", "-24": "May 24", "-23": "May 25", "-22": "May 26", "-21": "May 27", "-20": "May 28", "-19": "May 29", "-18": "May 30", "-17": "May 31", "-16": "Jun 01", "-15": "Jun 02", "-14": "Jun 03", "-13": "Jun 04", "-12": "Jun 05", "-11": "Jun 06", "-10": "Jun 07", "-9": "Jun 08", "-8": "Jun 09", "-7": "Jun 10", "-6": "Jun 11", "-5": "Jun 12", "-4": "Jun 13", "-3": "Jun 14", "-2": "Jun 15", "-1": "Jun 16", "0": "Jun 17"};
         
         map.createPane('sliderTimelinePane');
         map.getPane('sliderTimelinePane').style.zIndex = 650;
@@ -687,14 +687,14 @@
     </script>
     
     
-            <div class="folium-map" id="map_2636c719b759ab2b1b30c4dda83cde9e" ></div>
+            <div class="folium-map" id="map_23e20e06aa0aa220647d8d4e545133e5" ></div>
         
 </body>
 <script>
     
     
-            var map_2636c719b759ab2b1b30c4dda83cde9e = L.map(
-                "map_2636c719b759ab2b1b30c4dda83cde9e",
+            var map_23e20e06aa0aa220647d8d4e545133e5 = L.map(
+                "map_23e20e06aa0aa220647d8d4e545133e5",
                 {
                     center: [39.8, -98.5],
                     crs: L.CRS.EPSG3857,
@@ -711,7 +711,7 @@
 
         
     
-            var tile_layer_0882e3317900537ff1fed6db758a86a5 = L.tileLayer(
+            var tile_layer_c32e482ae0b0d83e5ad4337fa5537ebd = L.tileLayer(
                 "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
                 {
   "minZoom": 0,
@@ -728,10 +728,10 @@
             );
         
     
-            tile_layer_0882e3317900537ff1fed6db758a86a5.addTo(map_2636c719b759ab2b1b30c4dda83cde9e);
+            tile_layer_c32e482ae0b0d83e5ad4337fa5537ebd.addTo(map_23e20e06aa0aa220647d8d4e545133e5);
         
     
-            var tile_layer_fabdf1bb1a67a4bdeea5a9a30e020966 = L.tileLayer(
+            var tile_layer_0255ab24f37f49a706139efbb2d5e066 = L.tileLayer(
                 "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
                 {
   "minZoom": 0,
@@ -748,7 +748,7 @@
             );
         
     
-            var tile_layer_2fd7ed5101d024b5ba6188eab9dff53c = L.tileLayer(
+            var tile_layer_f7eee62f87b000aeadddafb582ca3c0b = L.tileLayer(
                 "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
                 {
   "minZoom": 0,
@@ -765,7 +765,7 @@
             );
         
     
-            var tile_layer_24278439256b69fffbd0ca72dea770ac = L.tileLayer(
+            var tile_layer_13105de3b7457ea94f56884c6afd0ee3 = L.tileLayer(
                 "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
                 {
   "minZoom": 0,
@@ -782,62 +782,62 @@
             );
         
     
-            var feature_group_0c63733f3b3d7579b786af9e3334603e = L.featureGroup(
+            var feature_group_f90fd4e293e0bfbb76ef8735dd1caaca = L.featureGroup(
                 {
 }
             );
         
     
-            var feature_group_249e38038021cb06bc4eb106d2790838 = L.featureGroup(
+            var feature_group_ccdc5366b4ae262d04df549e628dcc08 = L.featureGroup(
                 {
 }
             );
         
     
-            feature_group_249e38038021cb06bc4eb106d2790838.addTo(map_2636c719b759ab2b1b30c4dda83cde9e);
+            feature_group_ccdc5366b4ae262d04df549e628dcc08.addTo(map_23e20e06aa0aa220647d8d4e545133e5);
         
     
-            var feature_group_f85f221316f08171d88d154fb0888444 = L.featureGroup(
+            var feature_group_3bb19594562bc469938c712ca3a4a9e1 = L.featureGroup(
                 {
 }
             );
         
     
-            feature_group_f85f221316f08171d88d154fb0888444.addTo(map_2636c719b759ab2b1b30c4dda83cde9e);
+            feature_group_3bb19594562bc469938c712ca3a4a9e1.addTo(map_23e20e06aa0aa220647d8d4e545133e5);
         
     
-            var feature_group_8bab7ab0c419d24d4069d40bd2e7f7cf = L.featureGroup(
+            var feature_group_1baeda3806fe42cfd71fa839274e4a2f = L.featureGroup(
                 {
 }
             );
         
     
-            feature_group_8bab7ab0c419d24d4069d40bd2e7f7cf.addTo(map_2636c719b759ab2b1b30c4dda83cde9e);
+            feature_group_1baeda3806fe42cfd71fa839274e4a2f.addTo(map_23e20e06aa0aa220647d8d4e545133e5);
         
     
-            var layer_control_f3e5a04b5bc4b10a5b04b493ed597019_layers = {
+            var layer_control_8c42f204ee5d96e04497cfecde8e3960_layers = {
                 base_layers : {
-                    "Light Mode" : tile_layer_0882e3317900537ff1fed6db758a86a5,
-                    "Dark Mode" : tile_layer_fabdf1bb1a67a4bdeea5a9a30e020966,
-                    "Satellite Mode" : tile_layer_2fd7ed5101d024b5ba6188eab9dff53c,
-                    "Open Street Map" : tile_layer_24278439256b69fffbd0ca72dea770ac,
+                    "Light Mode" : tile_layer_c32e482ae0b0d83e5ad4337fa5537ebd,
+                    "Dark Mode" : tile_layer_0255ab24f37f49a706139efbb2d5e066,
+                    "Satellite Mode" : tile_layer_f7eee62f87b000aeadddafb582ca3c0b,
+                    "Open Street Map" : tile_layer_13105de3b7457ea94f56884c6afd0ee3,
                 },
                 overlays :  {
-                    "\u003cspan style=\u0027color: #ffff00; font-weight: bold; text-shadow: -1px -1px 0 #888, 1px -1px 0 #888, -1px 1px 0 #888, 1px 1px 0 #888;\u0027\u003e\u0026#9650; Action Stage\u003c/span\u003e" : feature_group_0c63733f3b3d7579b786af9e3334603e,
-                    "\u003cspan style=\u0027color: #ff9900; font-weight: bold; text-shadow: -1px -1px 0 #888, 1px -1px 0 #888, -1px 1px 0 #888, 1px 1px 0 #888;\u0027\u003e\u0026#9650; Minor Flood\u003c/span\u003e" : feature_group_249e38038021cb06bc4eb106d2790838,
-                    "\u003cspan style=\u0027color: #ff0000; font-weight: bold; text-shadow: -1px -1px 0 #888, 1px -1px 0 #888, -1px 1px 0 #888, 1px 1px 0 #888;\u0027\u003e\u0026#9650; Moderate Flood\u003c/span\u003e" : feature_group_f85f221316f08171d88d154fb0888444,
-                    "\u003cspan style=\u0027color: #cc33ff; font-weight: bold; text-shadow: -1px -1px 0 #888, 1px -1px 0 #888, -1px 1px 0 #888, 1px 1px 0 #888;\u0027\u003e\u0026#9650; Major Flood\u003c/span\u003e" : feature_group_8bab7ab0c419d24d4069d40bd2e7f7cf,
+                    "\u003cspan style=\u0027color: #ffff00; font-weight: bold; text-shadow: -1px -1px 0 #888, 1px -1px 0 #888, -1px 1px 0 #888, 1px 1px 0 #888;\u0027\u003e\u0026#9650; Action Stage\u003c/span\u003e" : feature_group_f90fd4e293e0bfbb76ef8735dd1caaca,
+                    "\u003cspan style=\u0027color: #ff9900; font-weight: bold; text-shadow: -1px -1px 0 #888, 1px -1px 0 #888, -1px 1px 0 #888, 1px 1px 0 #888;\u0027\u003e\u0026#9650; Minor Flood\u003c/span\u003e" : feature_group_ccdc5366b4ae262d04df549e628dcc08,
+                    "\u003cspan style=\u0027color: #ff0000; font-weight: bold; text-shadow: -1px -1px 0 #888, 1px -1px 0 #888, -1px 1px 0 #888, 1px 1px 0 #888;\u0027\u003e\u0026#9650; Moderate Flood\u003c/span\u003e" : feature_group_3bb19594562bc469938c712ca3a4a9e1,
+                    "\u003cspan style=\u0027color: #cc33ff; font-weight: bold; text-shadow: -1px -1px 0 #888, 1px -1px 0 #888, -1px 1px 0 #888, 1px 1px 0 #888;\u0027\u003e\u0026#9650; Major Flood\u003c/span\u003e" : feature_group_1baeda3806fe42cfd71fa839274e4a2f,
                 },
             };
-            let layer_control_f3e5a04b5bc4b10a5b04b493ed597019 = L.control.layers(
-                layer_control_f3e5a04b5bc4b10a5b04b493ed597019_layers.base_layers,
-                layer_control_f3e5a04b5bc4b10a5b04b493ed597019_layers.overlays,
+            let layer_control_8c42f204ee5d96e04497cfecde8e3960 = L.control.layers(
+                layer_control_8c42f204ee5d96e04497cfecde8e3960_layers.base_layers,
+                layer_control_8c42f204ee5d96e04497cfecde8e3960_layers.overlays,
                 {
   "position": "topright",
   "collapsed": false,
   "autoZIndex": true,
 }
-            ).addTo(map_2636c719b759ab2b1b30c4dda83cde9e);
+            ).addTo(map_23e20e06aa0aa220647d8d4e545133e5);
 
         
 </script>
