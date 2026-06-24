@@ -11,8 +11,7 @@ BASE_API_URL = "https://api.water.noaa.gov/nwps/v1/gauges"
 CACHE_FILE = "gauge_metadata_cache_all.json"
 DASHBOARD_FILE = "index.html" 
 
-# Safely bumped to 50 since we are halving our total requests!
-MAX_CONCURRENT_REQUESTS = 50
+MAX_CONCURRENT_REQUESTS = 75
 semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
 
 # --- Helper Functions ---
@@ -27,9 +26,13 @@ def has_valid_thresholds(categories):
                 return True
     return False
 
-def get_flood_status(stage, categories):
-    if stage is None or not categories:
+def get_flood_status(stage, categories, record_stage=None):
+    if stage is None or stage < -50:
         return "Normal"
+    
+    if record_stage is not None and record_stage > -50 and stage > record_stage:
+        return "Record"
+        
     for status_name in ["major", "moderate", "minor", "action"]:
         category_data = categories.get(status_name)
         if category_data is not None:
@@ -40,6 +43,7 @@ def get_flood_status(stage, categories):
 
 def get_status_color(status):
     colors = {
+        "Record": "#00ccff",   
         "Major": "#cc33ff",    
         "Moderate": "#ff0000", 
         "Minor": "#ff9900",    
@@ -174,7 +178,6 @@ async def build_metadata_cache(session):
     metadata = {}
     tasks = [fetch_metadata(session, lid) for lid in target_gauges]
     
-    # Progress tracker for metadata
     total_meta = len(tasks)
     completed_meta = 0
     for f in asyncio.as_completed(tasks):
@@ -197,10 +200,9 @@ async def generate_dashboard():
     async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
         metadata = await build_metadata_cache(session)
         
-        # --- MASSIVE OPTIMIZATION: Filter LIDs BEFORE fetching timeseries ---
         valid_lids = []
         for lid, meta in metadata.items():
-            if lid in ["ESLN8", "DCBN8"]: # Permanent excludes
+            if lid in ["ESLN8", "DCBN8"]: 
                 continue
             flood_categories = meta.get("flood", {}).get("categories", {})
             if has_valid_thresholds(flood_categories):
@@ -237,12 +239,14 @@ async def generate_dashboard():
 
     txt_outline = "text-shadow: -1px -1px 0 #888, 1px -1px 0 #888, -1px 1px 0 #888, 1px 1px 0 #888;"
 
+    fg_record = folium.FeatureGroup(name=f"<span style='color: #00ccff; font-weight: bold; {txt_outline}'>&#9650; Record Flood</span>")
     fg_major = folium.FeatureGroup(name=f"<span style='color: #cc33ff; font-weight: bold; {txt_outline}'>&#9650; Major Flood</span>")
     fg_moderate = folium.FeatureGroup(name=f"<span style='color: #ff0000; font-weight: bold; {txt_outline}'>&#9650; Moderate Flood</span>")
     fg_minor = folium.FeatureGroup(name=f"<span style='color: #ff9900; font-weight: bold; {txt_outline}'>&#9650; Minor Flood</span>")
     fg_action = folium.FeatureGroup(name=f"<span style='color: #ffff00; font-weight: bold; {txt_outline}'>&#9650; Action Stage</span>", show=False)
     
     layer_map = {
+        "Record": fg_record,
         "Major": fg_major,
         "Moderate": fg_moderate,
         "Minor": fg_minor,
@@ -250,7 +254,6 @@ async def generate_dashboard():
     }
 
     base_slider_data = [] 
-    forecast_timeline_data = []
 
     now_utc = datetime.now(timezone.utc)
     hour_bucket = (now_utc.hour // 6) * 6
@@ -266,9 +269,8 @@ async def generate_dashboard():
         d = now_utc + timedelta(days=i)
         lookback_dates[str(i)] = d.strftime('%b %d')
 
-    severityMapDict = {"Major": 4, "Moderate": 3, "Minor": 2, "Action": 1, "Normal": 0}
+    severityMapDict = {"Record": 5, "Major": 4, "Moderate": 3, "Minor": 2, "Action": 1, "Normal": 0}
 
-    # Iterate ONLY over the valid lids we fetched
     for lid in valid_lids:
         meta = metadata.get(lid, {})
         flood_categories = meta.get("flood", {}).get("categories", {})
@@ -308,6 +310,21 @@ async def generate_dashboard():
                 combined_timeseries.append(item)
         combined_timeseries.sort(key=lambda x: datetime.fromisoformat(x["validTime"].replace('Z', '+00:00')))
 
+        record_stage = None
+        rec_cat = flood_categories.get("record")
+        if rec_cat is not None:
+            record_stage = rec_cat.get("stage") if isinstance(rec_cat, dict) else rec_cat
+            
+        if record_stage is None or record_stage <= -50:
+            peaks = meta.get("historical", {}).get("peaks", [])
+            max_p = -100.0
+            for p in peaks:
+                stg = p.get("stage")
+                if stg is not None and stg > max_p:
+                    max_p = stg
+            if max_p > -50:
+                record_stage = max_p
+
         current_stage = None
         past_stages = {}
         past_statuses = {}
@@ -340,12 +357,12 @@ async def generate_dashboard():
                             days_ago_offset = (now_utc.date() - obs_dt.date()).days
                             if days_ago_offset >= 0 and days_ago_offset <= 30:
                                 if days_ago_offset not in past_stages or val > past_stages[days_ago_offset]:
-                                    past_stages[days_ago_offset] = val
-                                    past_statuses[days_ago_offset] = get_flood_status(val, flood_categories)
+                                    past_stages[days_ago_offset] = round(val, 2)
+                                    past_statuses[days_ago_offset] = get_flood_status(val, flood_categories, record_stage)
                     except Exception:
                         pass
                             
-        current_status = get_flood_status(current_stage, flood_categories)
+        current_status = get_flood_status(current_stage, flood_categories, record_stage)
         
         forecast_max = -1.0
         max_idx = -1
@@ -362,29 +379,25 @@ async def generate_dashboard():
             is_crested_overall = True
 
         if is_crested_overall and first_fx_stage is not None:
-            forecast_status = get_flood_status(first_fx_stage, flood_categories)
+            forecast_status = get_flood_status(first_fx_stage, flood_categories, record_stage)
             crest_str = f"Status: Crested & Receding (Peak: {round(first_fx_stage, 2)}ft)"
             crest_day_num = "1"
         else:
-            forecast_status = get_flood_status(forecast_max, flood_categories)
+            forecast_status = get_flood_status(forecast_max, flood_categories, record_stage)
             crest_str, _, crest_day_num, _, _ = get_crest_info(forecast_array)
         
         max_lookback_status = "Normal"
         for offset_val in past_statuses.values():
-            if offset_val == "Major": max_lookback_status = "Major"
-            elif offset_val == "Moderate" and max_lookback_status not in ["Major"]: max_lookback_status = "Moderate"
-            elif offset_val == "Minor" and max_lookback_status not in ["Major", "Moderate"]: max_lookback_status = "Minor"
+            if offset_val == "Record": max_lookback_status = "Record"
+            elif offset_val == "Major" and max_lookback_status not in ["Record"]: max_lookback_status = "Major"
+            elif offset_val == "Moderate" and max_lookback_status not in ["Record", "Major"]: max_lookback_status = "Moderate"
+            elif offset_val == "Minor" and max_lookback_status not in ["Record", "Major", "Moderate"]: max_lookback_status = "Minor"
             elif offset_val == "Action" and max_lookback_status == "Normal": max_lookback_status = "Action"
             
         if current_status == "Normal" and forecast_status == "Normal" and max_lookback_status == "Normal":
             continue
                 
-        nwps_url = f"https://water.noaa.gov/gauges/{lid}"
-        img_url = f"https://water.noaa.gov/resources/hydrographs/{lid.lower()}_hg.png"
-        
-        current_stage_text = f"{round(current_stage, 2)}ft" if current_stage is not None else "N/A (No recent obs)"
-                
-        frontend_ts = [{"t": x["validTime"], "v": x["primary"]} for x in observed_array]
+        frontend_ts = [{"t": x["validTime"], "v": round(x["primary"], 2)} for x in combined_timeseries]
         
         t_levels = {}
         for s_lbl in ["major", "moderate", "minor", "action"]:
@@ -393,46 +406,6 @@ async def generate_dashboard():
             if val is not None and val > -50:
                 t_levels[s_lbl] = val
 
-        if combined_timeseries:
-            for i in range(-28, 29):
-                target_slice = timeline_start_dt + timedelta(hours=6*i)
-                stage_at_slice = get_stage_at_time(combined_timeseries, target_slice)
-                
-                if stage_at_slice is not None:
-                    status_at_slice = get_flood_status(stage_at_slice, flood_categories)
-                    
-                    if status_at_slice != "Normal":
-                        stage_prev = get_stage_at_time(combined_timeseries, target_slice - timedelta(hours=6))
-                        step_is_crested = True if (stage_prev is not None and stage_at_slice < stage_prev) else False
-                        time_label = "Past Stage" if i < 0 else "Forecast Stage"
-
-                        popup_html_slice = f"""
-                        <div style="width: 450px; font-family: Arial, sans-serif; color: black;" data-lid="{lid}" data-mode="timeline" data-step="{i}">
-                            <h4 style="margin-bottom: 5px; margin-top: 0px;">Gauge: {lid}</h4>
-                            <div style="font-size: 14px; background: #eef2f5; padding: 6px; border-radius: 4px; margin-bottom: 5px; border: 1px solid #ccc;">
-                                <b>{crest_str}</b>
-                            </div>
-                            <b>Interpolated {time_label} at {forecast_timeline_labels[str(i)]}:</b> {round(stage_at_slice, 2)}ft<br>
-                            <hr style="margin: 5px 0;">
-                            <div class="popupChartContainer">
-                                <canvas class="gaugeChartCanvas" style="width:100%; height:200px; display:none;"></canvas>
-                                <img class="noaaStaticImg" src="{img_url}" alt="NWPS Hydrograph" style="width:100%; border:1px solid #ccc; border-radius:4px; display:none;">
-                            </div>
-                            <br>
-                            <a href="{nwps_url}" target="_blank" style="display: inline-block; margin-top: 8px; color: #0055ff; text-decoration: none; font-weight: bold;">&#128279; View Live NWPS Page</a>
-                        </div>
-                        """
-                            
-                        forecast_timeline_data.append({
-                            "step": i,
-                            "lat": lat,
-                            "lon": lon,
-                            "color": get_status_color(status_at_slice),
-                            "status": status_at_slice,
-                            "crested": step_is_crested,
-                            "popup": popup_html_slice
-                        })
-            
         obs_color = get_status_color(current_status)
         fx_color = get_status_color(forecast_status)
         
@@ -458,63 +431,56 @@ async def generate_dashboard():
         </div>
         """
         
-        popup_html = f"""
-        <div style="width: 450px; font-family: Arial, sans-serif; color: black;" data-lid="{lid}" data-mode="standard">
-            <h4 style="margin-bottom: 5px; margin-top: 0px;">Gauge: {lid}</h4>
-            <div style="font-size: 14px; background: #eef2f5; padding: 6px; border-radius: 4px; margin-bottom: 5px; border: 1px solid #ccc;">
-                <b>{crest_str}</b>
-            </div>
-            <b>Current Stage:</b> {current_stage_text}<br>
-            <hr style="margin: 5px 0;">
-            <div class="popupChartContainer">
-                <canvas class="gaugeChartCanvas" style="width:100%; height:200px; display:none;"></canvas>
-                <img class="noaaStaticImg" src="{img_url}" alt="NWPS Hydrograph" style="width:100%; border:1px solid #ccc; border-radius:4px;">
-            </div>
-            <br>
-            <a href="{nwps_url}" target="_blank" style="display: inline-block; margin-top: 8px; color: #0055ff; text-decoration: none; font-weight: bold;">&#128279; View Live NWPS Page</a>
-        </div>
-        """
+        placeholder_popup = f"<div class='dynamic-popup' data-lid='{lid}'>Loading Map Engine...</div>"
         
         display_status = forecast_status if forecast_status != "Normal" else current_status
+        has_forecast = len(forecast_array) > 0
         
         show_on_static = True
-        if display_status == "Normal":
-            display_status = max_lookback_status
+        
+        # --- NEW: Filter out Observation-Only gauges from Static Mode ---
+        if display_status == "Normal" or not has_forecast:
             show_on_static = False
+            # Safely capture the highest past max state so it still renders perfectly in Lookback Mode
+            if display_status == "Normal":
+                display_status = max_lookback_status
             
         if show_on_static:
             static_z_offset = severityMapDict.get(display_status, 0) * 1000
             folium.Marker(
                 location=[lat, lon],
-                popup=folium.Popup(popup_html, max_width=500),
+                popup=folium.Popup(placeholder_popup, max_width=500),
                 icon=folium.DivIcon(html=icon_html, icon_size=(34, 34), icon_anchor=(17, 17)),
                 z_index_offset=static_z_offset
             ).add_to(layer_map[display_status])
         
         base_slider_data.append({
-            "lid": lid,
-            "lat": lat,
-            "lon": lon,
+            "id": lid,
+            "la": round(lat, 5),
+            "lo": round(lon, 5),
             "color": fx_color,
             "past_stages": past_stages,
             "past_statuses": past_statuses,
-            "max_obs_30d": max_obs_30d,
+            "m30": round(max_obs_30d, 2) if max_obs_30d > -50 else None,
             "day_str": str(crest_day_num), 
-            "has_forecast": len(forecast_array) > 0, 
+            "has_forecast": has_forecast, 
             "current_status": current_status,
             "forecast_status": forecast_status,
             "display_status": display_status, 
             "is_crested": is_crested_overall, 
             "show_on_static": show_on_static,
             "thresholds": t_levels,
+            "record": record_stage,
             "timeseries": frontend_ts,
-            "popup": popup_html
+            "cstr": crest_str,
+            "c_stg": round(current_stage, 2) if current_stage is not None else None
         })
 
     fg_action.add_to(m)
     fg_minor.add_to(m)
     fg_moderate.add_to(m)
     fg_major.add_to(m)
+    fg_record.add_to(m)
 
     folium.LayerControl(collapsed=False).add_to(m)
     
@@ -608,9 +574,10 @@ async def generate_dashboard():
         Forecast Only: <span id="count-fxonly" style="font-weight: bold; color: #ffcc00;">0</span><br>
         <hr style="margin: 6px 0; border-color: #555;">
         <div style="font-weight: bold; margin-bottom: 3px;">Forecast Breakdown:</div>
-        Major: <span id="count-major" style="font-weight: bold; color: #cc33ff;">0</span> | 
-        Moderate: <span id="count-moderate" style="font-weight: bold; color: #ff0000;">0</span><br>
-        Minor: <span id="count-minor" style="font-weight: bold; color: #ff9900;">0</span> | 
+        Record: <span id="count-record" style="font-weight: bold; color: #00ccff;">0</span> | 
+        Major: <span id="count-major" style="font-weight: bold; color: #cc33ff;">0</span><br>
+        Moderate: <span id="count-moderate" style="font-weight: bold; color: #ff0000;">0</span> | 
+        Minor: <span id="count-minor" style="font-weight: bold; color: #ff9900;">0</span><br>
         Action: <span id="count-action" style="font-weight: bold; color: #ffff00;">0</span><br>
         <hr style="margin: 6px 0; border-color: #555;">
         
@@ -677,11 +644,11 @@ async def generate_dashboard():
     <script>
     window.addEventListener("load", function() {{
         var map = {m.get_name()}; 
-        var baseData = {json.dumps(base_slider_data)};
-        var forecastData = {json.dumps(forecast_timeline_data)};
-        var dayBounds = {json.dumps(day_bounds)};
-        var fxLabels = {json.dumps(forecast_timeline_labels)};
-        var lookbackDates = {json.dumps(lookback_dates)};
+        var baseData = {json.dumps(base_slider_data, separators=(',', ':'))};
+        var dayBounds = {json.dumps(day_bounds, separators=(',', ':'))};
+        var fxLabels = {json.dumps(forecast_timeline_labels, separators=(',', ':'))};
+        var lookbackDates = {json.dumps(lookback_dates, separators=(',', ':'))};
+        var timelineStartDt = new Date("{timeline_start_dt.isoformat()}");
         
         map.createPane('sliderTimelinePane');
         map.getPane('sliderTimelinePane').style.zIndex = 650;
@@ -725,35 +692,127 @@ async def generate_dashboard():
             "7+": "#FFC371"
         }};
         
-        var activeStatuses = {{ "Major": true, "Moderate": true, "Minor": true, "Action": false }};
-        var severityMapDict = {{ "Major": 4, "Moderate": 3, "Minor": 2, "Action": 1, "Normal": 0 }};
-        var colorMap = {{ "Major": "#cc33ff", "Moderate": "#ff0000", "Minor": "#ff9900", "Action": "#ffff00", "Normal": "#00ff00" }};
+        var activeStatuses = {{ "Record": true, "Major": true, "Moderate": true, "Minor": true, "Action": false }};
+        var severityMapDict = {{ "Record": 5, "Major": 4, "Moderate": 3, "Minor": 2, "Action": 1, "Normal": 0 }};
+        var colorMap = {{ "Record": "#00ccff", "Major": "#cc33ff", "Moderate": "#ff0000", "Minor": "#ff9900", "Action": "#ffff00", "Normal": "#00ff00" }};
         
         var activeChartInstance = null;
+        var renderTimer = null; 
+
+        function getStageAtTime(timeseries, targetDt) {{
+            if (!timeseries || timeseries.length === 0) return null;
+            var firstDt = new Date(timeseries[0].t).getTime();
+            var lastDt = new Date(timeseries[timeseries.length - 1].t).getTime();
+            var tarMs = targetDt.getTime();
+            
+            if (tarMs < firstDt) return timeseries[0].v;
+            if (tarMs > lastDt) return null;
+            
+            for (var i = 0; i < timeseries.length - 1; i++) {{
+                var t1 = new Date(timeseries[i].t).getTime();
+                var t2 = new Date(timeseries[i+1].t).getTime();
+                if (tarMs >= t1 && tarMs <= t2) {{
+                    var s1 = timeseries[i].v;
+                    var s2 = timeseries[i+1].v;
+                    if (s1 === null || s2 === null) return null;
+                    if (t1 === t2) return s1;
+                    
+                    var ratio = (tarMs - t1) / (t2 - t1);
+                    return s1 + ratio * (s2 - s1);
+                }}
+            }}
+            return null;
+        }}
+
+        function getFloodStatusJS(stage, thresholds, recordStage) {{
+            if (stage === null) return "Normal";
+            if (recordStage !== null && recordStage > -50 && stage > recordStage) return "Record";
+            if (thresholds.major !== undefined && stage >= thresholds.major) return "Major";
+            if (thresholds.moderate !== undefined && stage >= thresholds.moderate) return "Moderate";
+            if (thresholds.minor !== undefined && stage >= thresholds.minor) return "Minor";
+            if (thresholds.action !== undefined && stage >= thresholds.action) return "Action";
+            return "Normal";
+        }}
+
+        function generatePopupHTML(lid, mode, stepVal) {{
+            var gData = baseData.find(d => d.id === lid);
+            if (!gData) return "Error loading data.";
+            
+            var imgUrl = `https://water.noaa.gov/resources/hydrographs/${{lid.toLowerCase()}}_hg.png`;
+            var nwpsUrl = `https://water.noaa.gov/gauges/${{lid}}`;
+            
+            var timeLabel = "";
+            var valStr = "";
+            var injectedSubtext = "";
+            
+            if (mode === 'base' || mode === 'heatmap' || mode === 'crest') {{
+                timeLabel = "Current Stage";
+                valStr = gData.c_stg !== null ? gData.c_stg.toFixed(2) + 'ft' : 'N/A';
+                injectedSubtext = `<b>Current Stage:</b> ${{valStr}}<br><hr style="margin: 5px 0;"><b>Past 30-Day Max:</b> ${{gData.m30 !== null ? gData.m30.toFixed(2) + 'ft' : 'N/A'}}<br>`;
+            }} else if (mode === 'lookback') {{
+                var s_offset = Math.abs(parseInt(inputLookbackEnd.value));
+                var e_offset = Math.abs(parseInt(inputLookbackStart.value));
+                var max_val = -100.0;
+                for(let j = s_offset; j <= e_offset; j++) {{
+                    if(gData.past_stages[j] !== undefined && gData.past_stages[j] > max_val) {{
+                        max_val = gData.past_stages[j];
+                    }}
+                }}
+                valStr = max_val > -50 ? max_val.toFixed(2) + 'ft' : 'N/A';
+                injectedSubtext = `<b>Current Stage:</b> ${{gData.c_stg !== null ? gData.c_stg.toFixed(2) + 'ft' : 'N/A'}}<br><hr style="margin: 5px 0;"><div style="font-size: 14px; color: #b30000; margin-bottom: 5px;"><b>Selected Window Max (${{lookbackDates[inputLookbackStart.value]}} to ${{lookbackDates[inputLookbackEnd.value]}}):</b> ${{valStr}}</div>`;
+            }} else if (mode === 'forecast') {{
+                timeLabel = stepVal < 0 ? "Past Stage" : "Forecast Stage";
+                var targetDt = new Date(timelineStartDt.getTime() + (stepVal * 6 * 3600 * 1000));
+                var sliceVal = getStageAtTime(gData.timeseries, targetDt);
+                valStr = sliceVal !== null ? sliceVal.toFixed(2) + 'ft' : 'N/A';
+                injectedSubtext = `<b>Interpolated ${{timeLabel}} at ${{fxLabels[stepVal.toString()]}}:</b> ${{valStr}}<br>`;
+            }}
+            
+            return `
+                <div class="dynamic-popup" style="width: 450px; font-family: Arial, sans-serif; color: black;" data-lid="${{lid}}" data-mode="${{mode}}" data-step="${{stepVal}}">
+                    <h4 style="margin-bottom: 5px; margin-top: 0px;">Gauge: ${{lid}}</h4>
+                    <div style="font-size: 14px; background: #eef2f5; padding: 6px; border-radius: 4px; margin-bottom: 5px; border: 1px solid #ccc;">
+                        <b>${{gData.cstr}}</b>
+                    </div>
+                    ${{injectedSubtext}}
+                    <hr style="margin: 5px 0;">
+                    <div class="popupChartContainer">
+                        <canvas class="gaugeChartCanvas" style="width:100%; height:200px; display:none;"></canvas>
+                        <img class="noaaStaticImg" src="${{imgUrl}}" alt="NWPS Hydrograph" style="width:100%; border:1px solid #ccc; border-radius:4px; display:none;">
+                    </div>
+                    <br>
+                    <a href="${{nwpsUrl}}" target="_blank" style="display: inline-block; margin-top: 8px; color: #0055ff; text-decoration: none; font-weight: bold;">&#128279; View Live NWPS Page</a>
+                </div>
+            `;
+        }}
 
         map.on('popupopen', function(e) {{
             if (activeChartInstance) {{ activeChartInstance.destroy(); activeChartInstance = null; }}
             
-            var container = e.popup._contentNode.querySelector('[data-lid]');
-            if (!container) return;
+            var node = e.popup._contentNode.querySelector('.dynamic-popup');
+            if (!node) return;
             
-            var lid = container.getAttribute('data-lid');
-            var mode = container.getAttribute('data-mode');
+            var lid = node.getAttribute('data-lid');
+            var stepVal = activeMode === 'forecast' ? parseInt(inputForecast.value) : 0;
+            
+            e.popup.setContent(generatePopupHTML(lid, activeMode, stepVal));
+            
+            var container = e.popup._contentNode.querySelector('.dynamic-popup');
             var canvas = container.querySelector('.gaugeChartCanvas');
             var staticImg = container.querySelector('.noaaStaticImg');
             
-            var gData = baseData.find(d => d.lid === lid);
+            var gData = baseData.find(d => d.id === lid);
             if (!gData) return;
 
             var filteredData = [];
             var drawChart = true;
 
-            if (mode === 'standard') {{
+            if (activeMode === 'base' || activeMode === 'crest' || activeMode === 'heatmap') {{
                 drawChart = false;
                 if (canvas) canvas.style.display = 'none';
                 if (staticImg) staticImg.style.display = 'block';
             }} 
-            else if (mode === 'lookback') {{
+            else if (activeMode === 'lookback') {{
                 if (staticImg) staticImg.style.display = 'none';
                 if (canvas) canvas.style.display = 'block';
                 
@@ -765,9 +824,7 @@ async def generate_dashboard():
                     return d >= startLimit && d <= endLimit;
                 }});
             }} 
-            else if (mode === 'timeline') {{
-                var stepVal = parseInt(container.getAttribute('data-step'));
-                
+            else if (activeMode === 'forecast') {{
                 if (stepVal >= 0) {{
                     drawChart = false;
                     if (canvas) canvas.style.display = 'none';
@@ -797,8 +854,19 @@ async def generate_dashboard():
             var values = filteredData.map(pt => pt.v);
             var annotations = [];
             
-            var colorsEnum = {{ "major": "#cc33ff", "moderate": "#ff0000", "minor": "#ff9900", "action": "#ffff00" }};
+            var colorsEnum = {{ "record": "#00ccff", "major": "#cc33ff", "moderate": "#ff0000", "minor": "#ff9900", "action": "#ffff00" }};
             
+            if (gData.record && gData.record > -50) {{
+                annotations.push({{
+                    type: 'line',
+                    id: 'line-record',
+                    yMin: gData.record,
+                    yMax: gData.record,
+                    borderColor: colorsEnum['record'],
+                    borderWidth: 2.0, 
+                    label: {{ display: false }}
+                }});
+            }}
             for (let [lbl, thresholdVal] of Object.entries(gData.thresholds)) {{
                 annotations.push({{
                     type: 'line',
@@ -849,20 +917,96 @@ async def generate_dashboard():
             }});
         }});
 
+        document.addEventListener('keydown', function(e) {{
+            if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {{
+                if (['forecast', 'crest', 'lookback'].includes(activeMode)) {{
+                    e.preventDefault(); 
+                    let changed = false;
+
+                    if (activeMode === 'forecast') {{
+                        let val = parseInt(inputForecast.value);
+                        let step = (e.key === 'ArrowRight') ? 1 : -1;
+                        let newVal = val + step;
+                        if (newVal >= parseInt(inputForecast.min) && newVal <= parseInt(inputForecast.max)) {{
+                            inputForecast.value = newVal;
+                            lblForecast.innerText = fxLabels[newVal.toString()];
+                            changed = true;
+                        }}
+                    }} 
+                    else if (activeMode === 'crest') {{
+                        let val = parseInt(inputCrest.value);
+                        let step = (e.key === 'ArrowRight') ? 1 : -1;
+                        let newVal = val + step;
+                        if (newVal >= parseInt(inputCrest.min) && newVal <= parseInt(inputCrest.max)) {{
+                            inputCrest.value = newVal;
+                            lblCrest.innerText = "Day " + newVal;
+                            if (dayBounds[newVal]) lblCrestDates.innerText = dayBounds[newVal];
+                            changed = true;
+                        }}
+                    }}
+                    else if (activeMode === 'lookback') {{
+                        let sVal = parseInt(inputLookbackStart.value);
+                        let eVal = parseInt(inputLookbackEnd.value);
+                        let step = (e.key === 'ArrowRight') ? 1 : -1;
+                        
+                        let newSVal = sVal + step;
+                        let newEVal = eVal + step;
+                        
+                        if (newSVal >= parseInt(inputLookbackStart.min) && newEVal <= parseInt(inputLookbackEnd.max)) {{
+                            inputLookbackStart.value = newSVal;
+                            inputLookbackEnd.value = newEVal;
+                            
+                            lblLookbackStart.innerText = lookbackDates[newSVal.toString()];
+                            lblLookbackEnd.innerText = lookbackDates[newEVal.toString()] + (newEVal === 0 ? " (Today)" : "");
+                            changed = true;
+                        }}
+                    }}
+
+                    if (changed) {{
+                        clearTimeout(renderTimer);
+                        renderTimer = setTimeout(renderMap, 75);
+                    }}
+                }}
+            }}
+        }});
+
         inputLookbackStart.addEventListener('input', function() {{
             if (parseInt(this.value) > parseInt(inputLookbackEnd.value)) {{
                 inputLookbackEnd.value = this.value;
             }}
-            renderMap();
+            lblLookbackStart.innerText = lookbackDates[this.value];
+            
+            clearTimeout(renderTimer);
+            renderTimer = setTimeout(renderMap, 75);
         }});
+        
         inputLookbackEnd.addEventListener('input', function() {{
             if (parseInt(this.value) < parseInt(inputLookbackStart.value)) {{
                 inputLookbackStart.value = this.value;
             }}
-            renderMap();
+            lblLookbackEnd.innerText = lookbackDates[this.value] + (this.value === "0" ? " (Today)" : "");
+            
+            clearTimeout(renderTimer);
+            renderTimer = setTimeout(renderMap, 75);
+        }});
+
+        inputCrest.addEventListener('input', function() {{
+            lblCrest.innerText = "Day " + this.value;
+            if (dayBounds[this.value]) lblCrestDates.innerText = dayBounds[this.value];
+            
+            clearTimeout(renderTimer);
+            renderTimer = setTimeout(renderMap, 75);
+        }});
+
+        inputForecast.addEventListener('input', function() {{
+            lblForecast.innerText = fxLabels[this.value.toString()];
+            
+            clearTimeout(renderTimer);
+            renderTimer = setTimeout(renderMap, 75);
         }});
         
         map.on('overlayadd', function(e) {{
+            if (e.name.indexOf("Record") !== -1) activeStatuses["Record"] = true;
             if (e.name.indexOf("Major") !== -1) activeStatuses["Major"] = true;
             if (e.name.indexOf("Moderate") !== -1) activeStatuses["Moderate"] = true;
             if (e.name.indexOf("Minor") !== -1) activeStatuses["Minor"] = true;
@@ -872,6 +1016,7 @@ async def generate_dashboard():
         }});
         
         map.on('overlayremove', function(e) {{
+            if (e.name.indexOf("Record") !== -1) activeStatuses["Record"] = false;
             if (e.name.indexOf("Major") !== -1) activeStatuses["Major"] = false;
             if (e.name.indexOf("Moderate") !== -1) activeStatuses["Moderate"] = false;
             if (e.name.indexOf("Minor") !== -1) activeStatuses["Minor"] = false;
@@ -901,7 +1046,7 @@ async def generate_dashboard():
         
         function updateStats() {{
             var bounds = map.getBounds();
-            var obs_flood = 0; var fx_only = 0; var fx_major = 0; var fx_moderate = 0; var fx_minor = 0; var fx_action = 0; var day_count = 0;
+            var obs_flood = 0; var fx_only = 0; var fx_record = 0; var fx_major = 0; var fx_moderate = 0; var fx_minor = 0; var fx_action = 0; var day_count = 0;
             var daysCount = {{1:0, 2:0, 3:0, 4:0, 5:0, 6:0, 7:0}};
             var activeDay = inputCrest.value;
             
@@ -910,7 +1055,7 @@ async def generate_dashboard():
                 var e_offset = Math.abs(parseInt(inputLookbackStart.value));
                 
                 baseData.forEach(function(d) {{
-                    if (bounds.contains(L.latLng(d.lat, d.lon))) {{
+                    if (bounds.contains(L.latLng(d.la, d.lo))) {{
                         let max_sev = 0;
                         let best_status = "Normal";
                         for(let j = s_offset; j <= e_offset; j++) {{
@@ -923,20 +1068,40 @@ async def generate_dashboard():
                             }}
                         }}
                         
-                        if (best_status === "Major") fx_major++;
+                        if (best_status === "Record") fx_record++;
+                        else if (best_status === "Major") fx_major++;
                         else if (best_status === "Moderate") fx_moderate++;
                         else if (best_status === "Minor") fx_minor++;
                         else if (best_status === "Action") fx_action++;
                     }}
                 }});
             }} 
+            else if (activeMode === 'forecast') {{
+                var step = parseInt(inputForecast.value);
+                var targetDt = new Date(timelineStartDt.getTime() + (step * 6 * 3600 * 1000));
+                
+                baseData.forEach(function(d) {{
+                    if (bounds.contains(L.latLng(d.la, d.lo))) {{
+                        var sliceVal = getStageAtTime(d.timeseries, targetDt);
+                        if (sliceVal !== null) {{
+                            var status = getFloodStatusJS(sliceVal, d.thresholds, d.record);
+                            if (status === "Record") fx_record++;
+                            else if (status === "Major") fx_major++;
+                            else if (status === "Moderate") fx_moderate++;
+                            else if (status === "Minor") fx_minor++;
+                            else if (status === "Action") fx_action++;
+                        }}
+                    }}
+                }});
+            }}
             else {{
                 baseData.forEach(function(d) {{
-                    if (bounds.contains(L.latLng(d.lat, d.lon))) {{
+                    if (bounds.contains(L.latLng(d.la, d.lo))) {{
                         if (d.current_status !== "Normal") obs_flood++;
                         if (d.forecast_status !== "Normal" && d.current_status === "Normal") fx_only++;
                         
-                        if (d.forecast_status === "Major") fx_major++;
+                        if (d.forecast_status === "Record") fx_record++;
+                        else if (d.forecast_status === "Major") fx_major++;
                         else if (d.forecast_status === "Moderate") fx_moderate++;
                         else if (d.forecast_status === "Minor") fx_minor++;
                         else if (d.forecast_status === "Action") fx_action++;
@@ -952,22 +1117,9 @@ async def generate_dashboard():
                 }});
             }}
             
-            if (activeMode === 'forecast') {{
-                var step = inputForecast.value;
-                fx_major = 0; fx_moderate = 0; fx_minor = 0; fx_action = 0; 
-                
-                forecastData.forEach(function(d) {{
-                    if (d.step == step && bounds.contains(L.latLng(d.lat, d.lon))) {{
-                        if (d.status === "Major") fx_major++;
-                        else if (d.status === "Moderate") fx_moderate++;
-                        else if (d.status === "Minor") fx_minor++;
-                        else if (d.status === "Action") fx_action++;
-                    }}
-                }});
-            }}
-            
             document.getElementById('count-obs').innerText = (activeMode==='lookback') ? "N/A" : obs_flood;
             document.getElementById('count-fxonly').innerText = (activeMode==='forecast' || activeMode==='lookback') ? "N/A" : fx_only;
+            document.getElementById('count-record').innerText = fx_record;
             document.getElementById('count-major').innerText = fx_major;
             document.getElementById('count-moderate').innerText = fx_moderate;
             document.getElementById('count-minor').innerText = fx_minor;
@@ -1007,10 +1159,6 @@ async def generate_dashboard():
                 document.querySelectorAll('.leaflet-marker-icon').forEach(function(el) {{
                     el.style.display = ''; 
                 }});
-                
-                baseData.forEach(function(d) {{
-                    let staticPopup = d.popup.replace('', `<b>Past 30-Day Max:</b> ${{d.max_obs_30d > -50 ? d.max_obs_30d.toFixed(2) + 'ft' : 'N/A'}}<br>`);
-                }});
             }} 
             else if (activeMode === 'lookback') {{
                 if (markerPane) markerPane.style.display = 'none';
@@ -1022,9 +1170,6 @@ async def generate_dashboard():
                 
                 var startVal = inputLookbackStart.value;
                 var endVal = inputLookbackEnd.value;
-                
-                lblLookbackStart.innerText = lookbackDates[startVal];
-                lblLookbackEnd.innerText = lookbackDates[endVal] + (endVal === "0" ? " (Today)" : "");
                 
                 var s_offset = Math.abs(parseInt(endVal));
                 var e_offset = Math.abs(parseInt(startVal));
@@ -1051,16 +1196,12 @@ async def generate_dashboard():
                         var winColor = colorMap[best_status];
                         var dynamicZIndex = severityMapDict[best_status] * 1000;
                         
-                        var circle = L.circleMarker([d.lat, d.lon], {{
+                        var circle = L.circleMarker([d.la, d.lo], {{
                             radius: 8, fillColor: winColor, color: "black", weight: 1.5, opacity: 1, fillOpacity: 0.9, pane: 'sliderTimelinePane'
                         }});
                         
                         if (circle.setZIndexOffset) circle.setZIndexOffset(dynamicZIndex);
-                        
-                        let lbPopup = d.popup.replace('data-mode="standard"', 'data-mode="lookback"')
-                                             .replace('', `<div style="font-size: 14px; color: #b30000; margin-bottom: 5px;"><b>Selected Window Max (${{lookbackDates[startVal]}} to ${{lookbackDates[endVal]}}):</b> ${{max_val > -50 ? max_val.toFixed(2) + 'ft' : 'N/A'}}</div>`);
-                        
-                        circle.bindPopup(lbPopup, {{maxWidth: 500}});
+                        circle.bindPopup(`<div class='dynamic-popup' data-lid='${{d.id}}' data-mode='lookback'>Loading...</div>`, {{maxWidth: 500}});
                         dynamicLayer.addLayer(circle);
                     }}
                 }});
@@ -1074,22 +1215,18 @@ async def generate_dashboard():
                 uiHeatLegend.style.display = 'none';
                 
                 var day = inputCrest.value;
-                lblCrest.innerText = "Day " + day;
-                if (dayBounds[day]) lblCrestDates.innerText = dayBounds[day];
                 
                 baseData.forEach(function(d) {{
                     var cleanDay = d.day_str.replace('+', '');
                     if (cleanDay == day && activeStatuses[d.display_status] && !d.is_crested) {{
                         var dynamicZIndex = severityMapDict[d.display_status] * 1000;
                         
-                        var circle = L.circleMarker([d.lat, d.lon], {{
+                        var circle = L.circleMarker([d.la, d.lo], {{
                             radius: 8, fillColor: d.color, color: "black", weight: 1.5, opacity: 1, fillOpacity: 0.9, pane: 'sliderTimelinePane'
                         }});
                         
                         if (circle.setZIndexOffset) circle.setZIndexOffset(dynamicZIndex);
-                        
-                        let cPopup = d.popup.replace('', `<b>Past 30-Day Max:</b> ${{d.max_obs_30d > -50 ? d.max_obs_30d.toFixed(2) + 'ft' : 'N/A'}}<br>`);
-                        circle.bindPopup(cPopup, {{maxWidth: 500}});
+                        circle.bindPopup(`<div class='dynamic-popup' data-lid='${{d.id}}' data-mode='crest'>Loading...</div>`, {{maxWidth: 500}});
                         dynamicLayer.addLayer(circle);
                     }}
                 }});
@@ -1107,14 +1244,12 @@ async def generate_dashboard():
                         var dynamicZIndex = severityMapDict[d.display_status] * 1000;
                         var assignedColor = heatColors[d.day_str] || "#FFC371";
                         
-                        var circle = L.circleMarker([d.lat, d.lon], {{
+                        var circle = L.circleMarker([d.la, d.lo], {{
                             radius: 8, fillColor: assignedColor, color: "black", weight: 1.2, opacity: 1, fillOpacity: 0.9, pane: 'sliderTimelinePane'
                         }});
                         
                         if (circle.setZIndexOffset) circle.setZIndexOffset(dynamicZIndex);
-                        
-                        let hPopup = d.popup.replace('', `<b>Past 30-Day Max:</b> ${{d.max_obs_30d > -50 ? d.max_obs_30d.toFixed(2) + 'ft' : 'N/A'}}<br>`);
-                        circle.bindPopup(hPopup, {{maxWidth: 500}});
+                        circle.bindPopup(`<div class='dynamic-popup' data-lid='${{d.id}}' data-mode='heatmap'>Loading...</div>`, {{maxWidth: 500}});
                         dynamicLayer.addLayer(circle);
                     }}
                 }});
@@ -1127,20 +1262,28 @@ async def generate_dashboard():
                 uiCrestCount.style.display = 'none';
                 uiHeatLegend.style.display = 'none';
                 
-                var step = inputForecast.value;
-                lblForecast.innerText = fxLabels[step];
+                var step = parseInt(inputForecast.value);
+                var targetDt = new Date(timelineStartDt.getTime() + (step * 6 * 3600 * 1000));
                 
-                forecastData.forEach(function(d) {{
-                    if (d.step == step && activeStatuses[d.status]) {{
-                        var dynamicZIndex = severityMapDict[d.status] * 1000;
-                        
-                        var marker = L.marker([d.lat, d.lon], {{
-                            icon: getTimelineIcon(d.color, d.crested),
-                            pane: 'sliderTimelinePane',
-                            zIndexOffset: dynamicZIndex
-                        }});
-                        marker.bindPopup(d.popup, {{maxWidth: 500}});
-                        dynamicLayer.addLayer(marker);
+                baseData.forEach(function(d) {{
+                    var sliceVal = getStageAtTime(d.timeseries, targetDt);
+                    if (sliceVal !== null) {{
+                        var status = getFloodStatusJS(sliceVal, d.thresholds, d.record);
+                        if (status !== "Normal" && activeStatuses[status]) {{
+                            var prevDt = new Date(targetDt.getTime() - (6 * 3600 * 1000));
+                            var prevVal = getStageAtTime(d.timeseries, prevDt);
+                            var isCrested = (prevVal !== null && sliceVal < prevVal);
+                            
+                            var dynamicZIndex = severityMapDict[status] * 1000;
+                            var marker = L.marker([d.la, d.lo], {{
+                                icon: getTimelineIcon(colorMap[status], isCrested),
+                                pane: 'sliderTimelinePane',
+                                zIndexOffset: dynamicZIndex
+                            }});
+                            
+                            marker.bindPopup(`<div class='dynamic-popup' data-lid='${{d.id}}' data-mode='forecast' data-step='${{step}}'>Loading...</div>`, {{maxWidth: 500}});
+                            dynamicLayer.addLayer(marker);
+                        }}
                     }}
                 }});
             }}
@@ -1153,9 +1296,6 @@ async def generate_dashboard():
         btnCrest.onclick = function() {{ activeMode = 'crest'; renderMap(); }};
         btnHeatmap.onclick = function() {{ activeMode = 'heatmap'; renderMap(); }};
         btnForecast.onclick = function() {{ activeMode = 'forecast'; renderMap(); }};
-        
-        inputCrest.oninput = renderMap;
-        inputForecast.oninput = renderMap;
         
         renderMap(); 
     }});
