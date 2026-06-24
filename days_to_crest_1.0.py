@@ -95,33 +95,6 @@ def get_crest_info(forecast_data):
         day_str = "7+" if is_uncaptured else "7"
         return f"Forecast Crest: {max_stage}ft", max_stage, day_str, None, is_uncaptured
 
-def get_stage_at_time(timeseries_data, target_dt):
-    if not timeseries_data: return None
-    try:
-        first_dt = datetime.fromisoformat(timeseries_data[0]["validTime"].replace('Z', '+00:00'))
-        last_dt = datetime.fromisoformat(timeseries_data[-1]["validTime"].replace('Z', '+00:00'))
-        
-        if target_dt < first_dt:
-            return timeseries_data[0].get("primary")
-            
-        if target_dt > last_dt:
-            return None
-            
-        for i in range(len(timeseries_data) - 1):
-            t1 = datetime.fromisoformat(timeseries_data[i]["validTime"].replace('Z', '+00:00'))
-            t2 = datetime.fromisoformat(timeseries_data[i+1]["validTime"].replace('Z', '+00:00'))
-            if t1 <= target_dt <= t2:
-                s1 = timeseries_data[i].get("primary")
-                s2 = timeseries_data[i+1].get("primary")
-                if s1 is None or s2 is None: return None
-                if t1 == t2: return s1
-                
-                ratio = (target_dt - t1).total_seconds() / (t2 - t1).total_seconds()
-                return s1 + ratio * (s2 - s1)
-    except Exception:
-        pass
-    return None
-
 # --- Core Asynchronous Logic ---
 async def fetch_all_gauge_lids(session, retries=5):
     print("Discovering all NWPS gauges...")
@@ -304,11 +277,23 @@ async def generate_dashboard():
                 
         observed_array = cleaned_observed
         
-        combined_timeseries = []
+        # --- MASSIVE DATA COMPRESSION: Parallel Arrays & Epoch Timestamps ---
+        frontend_t = []
+        frontend_v = []
         for item in observed_array + forecast_array:
             if item.get("validTime") and item.get("primary") is not None and item.get("primary") > -50:
-                combined_timeseries.append(item)
-        combined_timeseries.sort(key=lambda x: datetime.fromisoformat(x["validTime"].replace('Z', '+00:00')))
+                try:
+                    dt = datetime.fromisoformat(item["validTime"].replace('Z', '+00:00'))
+                    frontend_t.append(int(dt.timestamp()))
+                    frontend_v.append(round(item["primary"], 2))
+                except Exception:
+                    pass
+        
+        # Ensure chronological order
+        if frontend_t:
+            sorted_pairs = sorted(zip(frontend_t, frontend_v), key=lambda x: x[0])
+            frontend_t = [x[0] for x in sorted_pairs]
+            frontend_v = [x[1] for x in sorted_pairs]
 
         record_stage = None
         rec_cat = flood_categories.get("record")
@@ -326,10 +311,9 @@ async def generate_dashboard():
                 record_stage = max_p
 
         current_stage = None
-        past_stages = {}
-        past_statuses = {}
         max_obs_30d = -100.0
         past_30d_dt = now_utc - timedelta(days=30)
+        max_lookback_status = "Normal"
 
         if observed_array:
             for obs in reversed(observed_array):
@@ -344,6 +328,7 @@ async def generate_dashboard():
                     except Exception:
                         pass
             
+            # Map absolute 30-day max and peak past status
             for obs in observed_array:
                 val = obs.get("primary")
                 time_str = obs.get("validTime")
@@ -353,12 +338,10 @@ async def generate_dashboard():
                         if obs_dt >= past_30d_dt:
                             if val > max_obs_30d:
                                 max_obs_30d = val
-                            
-                            days_ago_offset = (now_utc.date() - obs_dt.date()).days
-                            if days_ago_offset >= 0 and days_ago_offset <= 30:
-                                if days_ago_offset not in past_stages or val > past_stages[days_ago_offset]:
-                                    past_stages[days_ago_offset] = round(val, 2)
-                                    past_statuses[days_ago_offset] = get_flood_status(val, flood_categories, record_stage)
+                            # Evaluate absolute highest historical status string
+                            st = get_flood_status(val, flood_categories, record_stage)
+                            if severityMapDict.get(st, 0) > severityMapDict.get(max_lookback_status, 0):
+                                max_lookback_status = st
                     except Exception:
                         pass
                             
@@ -385,19 +368,9 @@ async def generate_dashboard():
         else:
             forecast_status = get_flood_status(forecast_max, flood_categories, record_stage)
             crest_str, _, crest_day_num, _, _ = get_crest_info(forecast_array)
-        
-        max_lookback_status = "Normal"
-        for offset_val in past_statuses.values():
-            if offset_val == "Record": max_lookback_status = "Record"
-            elif offset_val == "Major" and max_lookback_status not in ["Record"]: max_lookback_status = "Major"
-            elif offset_val == "Moderate" and max_lookback_status not in ["Record", "Major"]: max_lookback_status = "Moderate"
-            elif offset_val == "Minor" and max_lookback_status not in ["Record", "Major", "Moderate"]: max_lookback_status = "Minor"
-            elif offset_val == "Action" and max_lookback_status == "Normal": max_lookback_status = "Action"
             
         if current_status == "Normal" and forecast_status == "Normal" and max_lookback_status == "Normal":
             continue
-                
-        frontend_ts = [{"t": x["validTime"], "v": round(x["primary"], 2)} for x in combined_timeseries]
         
         t_levels = {}
         for s_lbl in ["major", "moderate", "minor", "action"]:
@@ -438,10 +411,8 @@ async def generate_dashboard():
         
         show_on_static = True
         
-        # --- NEW: Filter out Observation-Only gauges from Static Mode ---
         if display_status == "Normal" or not has_forecast:
             show_on_static = False
-            # Safely capture the highest past max state so it still renders perfectly in Lookback Mode
             if display_status == "Normal":
                 display_status = max_lookback_status
             
@@ -454,24 +425,22 @@ async def generate_dashboard():
                 z_index_offset=static_z_offset
             ).add_to(layer_map[display_status])
         
+        # Super-Minified Dictionary Appends
         base_slider_data.append({
             "id": lid,
             "la": round(lat, 5),
             "lo": round(lon, 5),
-            "color": fx_color,
-            "past_stages": past_stages,
-            "past_statuses": past_statuses,
             "m30": round(max_obs_30d, 2) if max_obs_30d > -50 else None,
-            "day_str": str(crest_day_num), 
-            "has_forecast": has_forecast, 
-            "current_status": current_status,
-            "forecast_status": forecast_status,
-            "display_status": display_status, 
-            "is_crested": is_crested_overall, 
-            "show_on_static": show_on_static,
-            "thresholds": t_levels,
-            "record": record_stage,
-            "timeseries": frontend_ts,
+            "day": str(crest_day_num), 
+            "hf": has_forecast, 
+            "cs": current_status,
+            "fs": forecast_status,
+            "ds": display_status, 
+            "cr": is_crested_overall, 
+            "th": t_levels,
+            "rec": record_stage,
+            "t": frontend_t,
+            "v": frontend_v,
             "cstr": crest_str,
             "c_stg": round(current_stage, 2) if current_stage is not None else None
         })
@@ -644,6 +613,7 @@ async def generate_dashboard():
     <script>
     window.addEventListener("load", function() {{
         var map = {m.get_name()}; 
+        // JSON separators block enforces zero whitespace padding for hyper-compression
         var baseData = {json.dumps(base_slider_data, separators=(',', ':'))};
         var dayBounds = {json.dumps(day_bounds, separators=(',', ':'))};
         var fxLabels = {json.dumps(forecast_timeline_labels, separators=(',', ':'))};
@@ -699,33 +669,29 @@ async def generate_dashboard():
         var activeChartInstance = null;
         var renderTimer = null; 
 
-        function getStageAtTime(timeseries, targetDt) {{
-            if (!timeseries || timeseries.length === 0) return null;
-            var firstDt = new Date(timeseries[0].t).getTime();
-            var lastDt = new Date(timeseries[timeseries.length - 1].t).getTime();
+        function getStageAtTime(tArr, vArr, targetDt) {{
+            if (!tArr || tArr.length === 0) return null;
             var tarMs = targetDt.getTime();
+            var firstMs = tArr[0] * 1000;
+            var lastMs = tArr[tArr.length - 1] * 1000;
             
-            if (tarMs < firstDt) return timeseries[0].v;
-            if (tarMs > lastDt) return null;
+            if (tarMs <= firstMs) return vArr[0];
+            if (tarMs >= lastMs) return null;
             
-            for (var i = 0; i < timeseries.length - 1; i++) {{
-                var t1 = new Date(timeseries[i].t).getTime();
-                var t2 = new Date(timeseries[i+1].t).getTime();
+            for (var i = 0; i < tArr.length - 1; i++) {{
+                var t1 = tArr[i] * 1000;
+                var t2 = tArr[i+1] * 1000;
                 if (tarMs >= t1 && tarMs <= t2) {{
-                    var s1 = timeseries[i].v;
-                    var s2 = timeseries[i+1].v;
-                    if (s1 === null || s2 === null) return null;
-                    if (t1 === t2) return s1;
-                    
+                    if (t1 === t2) return vArr[i];
                     var ratio = (tarMs - t1) / (t2 - t1);
-                    return s1 + ratio * (s2 - s1);
+                    return vArr[i] + ratio * (vArr[i+1] - vArr[i]);
                 }}
             }}
             return null;
         }}
 
         function getFloodStatusJS(stage, thresholds, recordStage) {{
-            if (stage === null) return "Normal";
+            if (stage === null || stage < -50) return "Normal";
             if (recordStage !== null && recordStage > -50 && stage > recordStage) return "Record";
             if (thresholds.major !== undefined && stage >= thresholds.major) return "Major";
             if (thresholds.moderate !== undefined && stage >= thresholds.moderate) return "Moderate";
@@ -746,24 +712,30 @@ async def generate_dashboard():
             var injectedSubtext = "";
             
             if (mode === 'base' || mode === 'heatmap' || mode === 'crest') {{
-                timeLabel = "Current Stage";
                 valStr = gData.c_stg !== null ? gData.c_stg.toFixed(2) + 'ft' : 'N/A';
                 injectedSubtext = `<b>Current Stage:</b> ${{valStr}}<br><hr style="margin: 5px 0;"><b>Past 30-Day Max:</b> ${{gData.m30 !== null ? gData.m30.toFixed(2) + 'ft' : 'N/A'}}<br>`;
             }} else if (mode === 'lookback') {{
-                var s_offset = Math.abs(parseInt(inputLookbackEnd.value));
-                var e_offset = Math.abs(parseInt(inputLookbackStart.value));
+                var s_offset = parseInt(inputLookbackEnd.value);
+                var e_offset = parseInt(inputLookbackStart.value);
                 var max_val = -100.0;
-                for(let j = s_offset; j <= e_offset; j++) {{
-                    if(gData.past_stages[j] !== undefined && gData.past_stages[j] > max_val) {{
-                        max_val = gData.past_stages[j];
+                
+                let startLimitMs = new Date(); startLimitMs.setDate(startLimitMs.getDate() + e_offset); startLimitMs.setHours(0,0,0,0);
+                let endLimitMs = new Date(); endLimitMs.setDate(endLimitMs.getDate() + s_offset); endLimitMs.setHours(23,59,59,999);
+
+                for(let i=0; i < gData.t.length; i++) {{
+                    let ptMs = gData.t[i] * 1000;
+                    if(ptMs >= startLimitMs.getTime() && ptMs <= endLimitMs.getTime()) {{
+                        if(gData.v[i] > max_val) max_val = gData.v[i];
                     }}
                 }}
+                
                 valStr = max_val > -50 ? max_val.toFixed(2) + 'ft' : 'N/A';
-                injectedSubtext = `<b>Current Stage:</b> ${{gData.c_stg !== null ? gData.c_stg.toFixed(2) + 'ft' : 'N/A'}}<br><hr style="margin: 5px 0;"><div style="font-size: 14px; color: #b30000; margin-bottom: 5px;"><b>Selected Window Max (${{lookbackDates[inputLookbackStart.value]}} to ${{lookbackDates[inputLookbackEnd.value]}}):</b> ${{valStr}}</div>`;
+                let currStr = gData.c_stg !== null ? gData.c_stg.toFixed(2) + 'ft' : 'N/A';
+                injectedSubtext = `<b>Current Stage:</b> ${{currStr}}<br><hr style="margin: 5px 0;"><div style="font-size: 14px; color: #b30000; margin-bottom: 5px;"><b>Selected Window Max (${{lookbackDates[inputLookbackStart.value]}} to ${{lookbackDates[inputLookbackEnd.value]}}):</b> ${{valStr}}</div>`;
             }} else if (mode === 'forecast') {{
                 timeLabel = stepVal < 0 ? "Past Stage" : "Forecast Stage";
                 var targetDt = new Date(timelineStartDt.getTime() + (stepVal * 6 * 3600 * 1000));
-                var sliceVal = getStageAtTime(gData.timeseries, targetDt);
+                var sliceVal = getStageAtTime(gData.t, gData.v, targetDt);
                 valStr = sliceVal !== null ? sliceVal.toFixed(2) + 'ft' : 'N/A';
                 injectedSubtext = `<b>Interpolated ${{timeLabel}} at ${{fxLabels[stepVal.toString()]}}:</b> ${{valStr}}<br>`;
             }}
@@ -804,7 +776,8 @@ async def generate_dashboard():
             var gData = baseData.find(d => d.id === lid);
             if (!gData) return;
 
-            var filteredData = [];
+            var filteredT = [];
+            var filteredV = [];
             var drawChart = true;
 
             if (activeMode === 'base' || activeMode === 'crest' || activeMode === 'heatmap') {{
@@ -816,13 +789,19 @@ async def generate_dashboard():
                 if (staticImg) staticImg.style.display = 'none';
                 if (canvas) canvas.style.display = 'block';
                 
-                let startLimit = new Date(); startLimit.setDate(startLimit.getDate() + parseInt(inputLookbackStart.value)); startLimit.setHours(0,0,0,0);
-                let endLimit = new Date(); endLimit.setDate(endLimit.getDate() + parseInt(inputLookbackEnd.value)); endLimit.setHours(23,59,59,999);
+                var s_offset = parseInt(inputLookbackEnd.value);
+                var e_offset = parseInt(inputLookbackStart.value);
                 
-                filteredData = gData.timeseries.filter(pt => {{
-                    let d = new Date(pt.t);
-                    return d >= startLimit && d <= endLimit;
-                }});
+                let startLimitMs = new Date(); startLimitMs.setDate(startLimitMs.getDate() + e_offset); startLimitMs.setHours(0,0,0,0);
+                let endLimitMs = new Date(); endLimitMs.setDate(endLimitMs.getDate() + s_offset); endLimitMs.setHours(23,59,59,999);
+                
+                for(let i=0; i < gData.t.length; i++) {{
+                    let ptMs = gData.t[i] * 1000;
+                    if(ptMs >= startLimitMs.getTime() && ptMs <= endLimitMs.getTime()) {{
+                        filteredT.push(ptMs);
+                        filteredV.push(gData.v[i]);
+                    }}
+                }}
             }} 
             else if (activeMode === 'forecast') {{
                 if (stepVal >= 0) {{
@@ -833,41 +812,41 @@ async def generate_dashboard():
                     if (staticImg) staticImg.style.display = 'none';
                     if (canvas) canvas.style.display = 'block';
                     
-                    let baseAnchor = new Date(); 
-                    let bucketHour = Math.floor(baseAnchor.getUTCHours() / 6) * 6;
-                    baseAnchor.setUTCHours(bucketHour, 0,0,0);
-                    baseAnchor.setHours(baseAnchor.getHours() + (stepVal * 6));
+                    var targetDt = new Date(timelineStartDt.getTime() + (stepVal * 6 * 3600 * 1000));
+                    
+                    let winStartMs = targetDt.getTime() - (5 * 24 * 3600 * 1000);
+                    let winEndMs = targetDt.getTime() + (5 * 24 * 3600 * 1000);
 
-                    let winStart = new Date(baseAnchor.getTime() - (5 * 24 * 60 * 60 * 1000));
-                    let winEnd = new Date(baseAnchor.getTime() + (5 * 24 * 60 * 60 * 1000));
-
-                    filteredData = gData.timeseries.filter(pt => {{
-                        let d = new Date(pt.t);
-                        return d >= winStart && d <= winEnd;
-                    }});
+                    for(let i=0; i < gData.t.length; i++) {{
+                        let ptMs = gData.t[i] * 1000;
+                        if(ptMs >= winStartMs && ptMs <= winEndMs) {{
+                            filteredT.push(ptMs);
+                            filteredV.push(gData.v[i]);
+                        }}
+                    }}
                 }}
             }}
 
             if (!drawChart || !canvas) return;
 
-            var labels = filteredData.map(pt => new Date(pt.t));
-            var values = filteredData.map(pt => pt.v);
+            var labels = filteredT.map(ms => new Date(ms));
+            var values = filteredV;
             var annotations = [];
             
             var colorsEnum = {{ "record": "#00ccff", "major": "#cc33ff", "moderate": "#ff0000", "minor": "#ff9900", "action": "#ffff00" }};
             
-            if (gData.record && gData.record > -50) {{
+            if (gData.rec !== null && gData.rec > -50) {{
                 annotations.push({{
                     type: 'line',
                     id: 'line-record',
-                    yMin: gData.record,
-                    yMax: gData.record,
+                    yMin: gData.rec,
+                    yMax: gData.rec,
                     borderColor: colorsEnum['record'],
                     borderWidth: 2.0, 
                     label: {{ display: false }}
                 }});
             }}
-            for (let [lbl, thresholdVal] of Object.entries(gData.thresholds)) {{
+            for (let [lbl, thresholdVal] of Object.entries(gData.th)) {{
                 annotations.push({{
                     type: 'line',
                     id: 'line-' + lbl,
@@ -1051,22 +1030,25 @@ async def generate_dashboard():
             var activeDay = inputCrest.value;
             
             if (activeMode === 'lookback') {{
-                var s_offset = Math.abs(parseInt(inputLookbackEnd.value));
-                var e_offset = Math.abs(parseInt(inputLookbackStart.value));
+                var s_offset = parseInt(inputLookbackEnd.value);
+                var e_offset = parseInt(inputLookbackStart.value);
+                
+                let startLimitMs = new Date(); startLimitMs.setDate(startLimitMs.getDate() + e_offset); startLimitMs.setHours(0,0,0,0);
+                let endLimitMs = new Date(); endLimitMs.setDate(endLimitMs.getDate() + s_offset); endLimitMs.setHours(23,59,59,999);
                 
                 baseData.forEach(function(d) {{
                     if (bounds.contains(L.latLng(d.la, d.lo))) {{
                         let max_sev = 0;
-                        let best_status = "Normal";
-                        for(let j = s_offset; j <= e_offset; j++) {{
-                            if(d.past_statuses[j] !== undefined) {{
-                                let sev = severityMapDict[d.past_statuses[j]];
-                                if(sev > max_sev) {{
-                                    max_sev = sev;
-                                    best_status = d.past_statuses[j];
-                                }}
+                        let max_val = -100.0;
+                        
+                        for(let i=0; i < d.t.length; i++) {{
+                            let ptMs = d.t[i] * 1000;
+                            if(ptMs >= startLimitMs.getTime() && ptMs <= endLimitMs.getTime()) {{
+                                if(d.v[i] > max_val) max_val = d.v[i];
                             }}
                         }}
+                        
+                        let best_status = getFloodStatusJS(max_val > -50 ? max_val : null, d.th, d.rec);
                         
                         if (best_status === "Record") fx_record++;
                         else if (best_status === "Major") fx_major++;
@@ -1082,9 +1064,9 @@ async def generate_dashboard():
                 
                 baseData.forEach(function(d) {{
                     if (bounds.contains(L.latLng(d.la, d.lo))) {{
-                        var sliceVal = getStageAtTime(d.timeseries, targetDt);
+                        var sliceVal = getStageAtTime(d.t, d.v, targetDt);
                         if (sliceVal !== null) {{
-                            var status = getFloodStatusJS(sliceVal, d.thresholds, d.record);
+                            var status = getFloodStatusJS(sliceVal, d.th, d.rec);
                             if (status === "Record") fx_record++;
                             else if (status === "Major") fx_major++;
                             else if (status === "Moderate") fx_moderate++;
@@ -1097,17 +1079,17 @@ async def generate_dashboard():
             else {{
                 baseData.forEach(function(d) {{
                     if (bounds.contains(L.latLng(d.la, d.lo))) {{
-                        if (d.current_status !== "Normal") obs_flood++;
-                        if (d.forecast_status !== "Normal" && d.current_status === "Normal") fx_only++;
+                        if (d.cs !== "Normal") obs_flood++;
+                        if (d.fs !== "Normal" && d.cs === "Normal") fx_only++;
                         
-                        if (d.forecast_status === "Record") fx_record++;
-                        else if (d.forecast_status === "Major") fx_major++;
-                        else if (d.forecast_status === "Moderate") fx_moderate++;
-                        else if (d.forecast_status === "Minor") fx_minor++;
-                        else if (d.forecast_status === "Action") fx_action++;
+                        if (d.fs === "Record") fx_record++;
+                        else if (d.fs === "Major") fx_major++;
+                        else if (d.fs === "Moderate") fx_moderate++;
+                        else if (d.fs === "Minor") fx_minor++;
+                        else if (d.fs === "Action") fx_action++;
                         
-                        if (activeStatuses[d.display_status] && !d.is_crested) {{
-                            var parsedDay = parseInt(d.day_str.replace('+', ''));
+                        if (activeStatuses[d.ds] && !d.cr) {{
+                            var parsedDay = parseInt(d.day.replace('+', ''));
                             if (parsedDay >= 1 && parsedDay <= 7) {{
                                 daysCount[parsedDay]++;
                             }}
@@ -1168,36 +1150,28 @@ async def generate_dashboard():
                 uiCrestCount.style.display = 'none';
                 uiHeatLegend.style.display = 'none';
                 
-                var startVal = inputLookbackStart.value;
-                var endVal = inputLookbackEnd.value;
+                var s_offset = parseInt(inputLookbackEnd.value);
+                var e_offset = parseInt(inputLookbackStart.value);
                 
-                var s_offset = Math.abs(parseInt(endVal));
-                var e_offset = Math.abs(parseInt(startVal));
+                let startLimitMs = new Date(); startLimitMs.setDate(startLimitMs.getDate() + e_offset); startLimitMs.setHours(0,0,0,0);
+                let endLimitMs = new Date(); endLimitMs.setDate(endLimitMs.getDate() + s_offset); endLimitMs.setHours(23,59,59,999);
                 
                 baseData.forEach(function(d) {{
-                    let max_sev = 0;
                     let max_val = -100.0;
-                    let best_status = "Normal";
                     
-                    for(let j = s_offset; j <= e_offset; j++) {{
-                        if(d.past_stages[j] !== undefined && d.past_stages[j] > max_val) {{
-                            max_val = d.past_stages[j];
-                        }}
-                        if(d.past_statuses[j] !== undefined) {{
-                            let sev = severityMapDict[d.past_statuses[j]];
-                            if(sev > max_sev) {{
-                                max_sev = sev;
-                                best_status = d.past_statuses[j];
-                            }}
+                    for(let i=0; i < d.t.length; i++) {{
+                        let ptMs = d.t[i] * 1000;
+                        if(ptMs >= startLimitMs.getTime() && ptMs <= endLimitMs.getTime()) {{
+                            if(d.v[i] > max_val) max_val = d.v[i];
                         }}
                     }}
                     
+                    let best_status = getFloodStatusJS(max_val > -50 ? max_val : null, d.th, d.rec);
+                    
                     if (best_status !== "Normal" && activeStatuses[best_status]) {{
-                        var winColor = colorMap[best_status];
                         var dynamicZIndex = severityMapDict[best_status] * 1000;
-                        
                         var circle = L.circleMarker([d.la, d.lo], {{
-                            radius: 8, fillColor: winColor, color: "black", weight: 1.5, opacity: 1, fillOpacity: 0.9, pane: 'sliderTimelinePane'
+                            radius: 8, fillColor: colorMap[best_status], color: "black", weight: 1.5, opacity: 1, fillOpacity: 0.9, pane: 'sliderTimelinePane'
                         }});
                         
                         if (circle.setZIndexOffset) circle.setZIndexOffset(dynamicZIndex);
@@ -1217,10 +1191,9 @@ async def generate_dashboard():
                 var day = inputCrest.value;
                 
                 baseData.forEach(function(d) {{
-                    var cleanDay = d.day_str.replace('+', '');
-                    if (cleanDay == day && activeStatuses[d.display_status] && !d.is_crested) {{
-                        var dynamicZIndex = severityMapDict[d.display_status] * 1000;
-                        
+                    var cleanDay = d.day.replace('+', '');
+                    if (cleanDay == day && activeStatuses[d.ds] && !d.cr) {{
+                        var dynamicZIndex = severityMapDict[d.ds] * 1000;
                         var circle = L.circleMarker([d.la, d.lo], {{
                             radius: 8, fillColor: d.color, color: "black", weight: 1.5, opacity: 1, fillOpacity: 0.9, pane: 'sliderTimelinePane'
                         }});
@@ -1240,9 +1213,9 @@ async def generate_dashboard():
                 uiHeatLegend.style.display = 'block';
                 
                 baseData.forEach(function(d) {{
-                    if (activeStatuses[d.display_status] && !d.is_crested && d.has_forecast) {{
-                        var dynamicZIndex = severityMapDict[d.display_status] * 1000;
-                        var assignedColor = heatColors[d.day_str] || "#FFC371";
+                    if (activeStatuses[d.ds] && !d.cr && d.hf) {{
+                        var dynamicZIndex = severityMapDict[d.ds] * 1000;
+                        var assignedColor = heatColors[d.day] || "#FFC371";
                         
                         var circle = L.circleMarker([d.la, d.lo], {{
                             radius: 8, fillColor: assignedColor, color: "black", weight: 1.2, opacity: 1, fillOpacity: 0.9, pane: 'sliderTimelinePane'
@@ -1266,12 +1239,12 @@ async def generate_dashboard():
                 var targetDt = new Date(timelineStartDt.getTime() + (step * 6 * 3600 * 1000));
                 
                 baseData.forEach(function(d) {{
-                    var sliceVal = getStageAtTime(d.timeseries, targetDt);
+                    var sliceVal = getStageAtTime(d.t, d.v, targetDt);
                     if (sliceVal !== null) {{
-                        var status = getFloodStatusJS(sliceVal, d.thresholds, d.record);
+                        var status = getFloodStatusJS(sliceVal, d.th, d.rec);
                         if (status !== "Normal" && activeStatuses[status]) {{
                             var prevDt = new Date(targetDt.getTime() - (6 * 3600 * 1000));
-                            var prevVal = getStageAtTime(d.timeseries, prevDt);
+                            var prevVal = getStageAtTime(d.t, d.v, prevDt);
                             var isCrested = (prevVal !== null && sliceVal < prevVal);
                             
                             var dynamicZIndex = severityMapDict[status] * 1000;
